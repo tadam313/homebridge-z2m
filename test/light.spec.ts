@@ -1250,4 +1250,170 @@ describe('Light', () => {
       expect(disableSpy).not.toHaveBeenCalled();
     });
   });
+
+  describe('Include Last Color Feature', () => {
+    afterEach(() => {
+      vi.resetAllMocks();
+    });
+
+    describe('With color_hs device', () => {
+      test('includes last color when turning on (include_last_color: true)', () => {
+        // Load OSRAM device with color_hs support
+        const deviceExposes = loadExposesFromFile('osram/ac03645.json');
+        expect(deviceExposes.length).toBeGreaterThan(0);
+
+        const harness = new ServiceHandlersTestHarness();
+        harness.addConverterConfiguration('light', { include_last_color: true });
+        harness.numberOfExpectedControllers = 1;
+
+        harness
+          .getOrAddHandler(hap.Service.Lightbulb)
+          .addExpectedCharacteristic('state', hap.Characteristic.On, true)
+          .addExpectedCharacteristic('brightness', hap.Characteristic.Brightness, true)
+          .addExpectedCharacteristic('color_temp', hap.Characteristic.ColorTemperature, true)
+          .addExpectedPropertyCheck('color')
+          .addExpectedCharacteristic('hue', hap.Characteristic.Hue, true)
+          .addExpectedCharacteristic('saturation', hap.Characteristic.Saturation, true);
+
+        harness.prepareCreationMocks();
+        harness.callCreators(deviceExposes);
+        harness.checkCreationExpectations();
+
+        // Set a color first (red: hue 0, saturation 100)
+        harness
+          .getOrAddHandler(hap.Service.Lightbulb)
+          .callAndCheckHomeKitSetCallback('hue', 0)
+          .callAndCheckHomeKitSetCallback('saturation', 100);
+
+        harness.clearMocks();
+
+        // Mock the characteristic values to return the color we just set
+        const hueMock = harness.getOrAddHandler(hap.Service.Lightbulb).getCharacteristicMock('hue');
+        const saturationMock = harness.getOrAddHandler(hap.Service.Lightbulb).getCharacteristicMock('saturation');
+        hueMock.value = 0;
+        saturationMock.value = 100;
+
+        // Now turn on the light - it should include the color
+        harness.getOrAddHandler(hap.Service.Lightbulb).callAndCheckHomeKitSetCallback('state', true);
+
+        // Verify both state ON and color were queued
+        harness.checkSetDataQueued({ state: 'ON', color: { hue: 0, saturation: 100 } });
+      });
+
+      test('does not include color when turning on (include_last_color: false/default)', () => {
+        // Load OSRAM device with color_hs support
+        const deviceExposes = loadExposesFromFile('osram/ac03645.json');
+        expect(deviceExposes.length).toBeGreaterThan(0);
+
+        const harness = new ServiceHandlersTestHarness();
+        // Don't set include_last_color - defaults to false
+        harness.numberOfExpectedControllers = 1;
+
+        harness
+          .getOrAddHandler(hap.Service.Lightbulb)
+          .addExpectedCharacteristic('state', hap.Characteristic.On, true)
+          .addExpectedCharacteristic('brightness', hap.Characteristic.Brightness, true)
+          .addExpectedCharacteristic('color_temp', hap.Characteristic.ColorTemperature, true)
+          .addExpectedPropertyCheck('color')
+          .addExpectedCharacteristic('hue', hap.Characteristic.Hue, true)
+          .addExpectedCharacteristic('saturation', hap.Characteristic.Saturation, true);
+
+        harness.prepareCreationMocks();
+        harness.callCreators(deviceExposes);
+        harness.checkCreationExpectations();
+
+        // Set a color first
+        harness
+          .getOrAddHandler(hap.Service.Lightbulb)
+          .callAndCheckHomeKitSetCallback('hue', 0)
+          .callAndCheckHomeKitSetCallback('saturation', 100);
+
+        harness.clearMocks();
+
+        // Mock the characteristic values
+        const hueMock = harness.getOrAddHandler(hap.Service.Lightbulb).getCharacteristicMock('hue');
+        const saturationMock = harness.getOrAddHandler(hap.Service.Lightbulb).getCharacteristicMock('saturation');
+        hueMock.value = 0;
+        saturationMock.value = 100;
+
+        // Now turn on the light - it should NOT include color
+        harness.getOrAddHandler(hap.Service.Lightbulb).callAndCheckHomeKitSetCallback('state', true);
+
+        // Verify only state ON was queued (no color)
+        harness.checkSetDataQueued({ state: 'ON' });
+      });
+
+      test('turning on without setting color first does not crash', () => {
+        // Load OSRAM device with color_hs support
+        const deviceExposes = loadExposesFromFile('osram/ac03645.json');
+        expect(deviceExposes.length).toBeGreaterThan(0);
+
+        const harness = new ServiceHandlersTestHarness();
+        harness.addConverterConfiguration('light', { include_last_color: true });
+        harness.numberOfExpectedControllers = 1;
+
+        harness
+          .getOrAddHandler(hap.Service.Lightbulb)
+          .addExpectedCharacteristic('state', hap.Characteristic.On, true)
+          .addExpectedCharacteristic('brightness', hap.Characteristic.Brightness, true)
+          .addExpectedCharacteristic('color_temp', hap.Characteristic.ColorTemperature, true)
+          .addExpectedPropertyCheck('color')
+          .addExpectedCharacteristic('hue', hap.Characteristic.Hue, true)
+          .addExpectedCharacteristic('saturation', hap.Characteristic.Saturation, true);
+
+        harness.prepareCreationMocks();
+        harness.callCreators(deviceExposes);
+        harness.checkCreationExpectations();
+
+        // Turn on without setting color - should not crash and just send state
+        harness.getOrAddHandler(hap.Service.Lightbulb).callAndCheckHomeKitSetCallback('state', true);
+
+        // Verify only state ON was queued (no color because cached values are 0/0 which are undefined)
+        harness.checkSetDataQueued({ state: 'ON' });
+      });
+
+      test('turning off does not include color even with include_last_color enabled', () => {
+        // Load OSRAM device with color_hs support
+        const deviceExposes = loadExposesFromFile('osram/ac03645.json');
+        expect(deviceExposes.length).toBeGreaterThan(0);
+
+        const harness = new ServiceHandlersTestHarness();
+        harness.addConverterConfiguration('light', { include_last_color: true });
+        harness.numberOfExpectedControllers = 1;
+
+        harness
+          .getOrAddHandler(hap.Service.Lightbulb)
+          .addExpectedCharacteristic('state', hap.Characteristic.On, true)
+          .addExpectedCharacteristic('brightness', hap.Characteristic.Brightness, true)
+          .addExpectedCharacteristic('color_temp', hap.Characteristic.ColorTemperature, true)
+          .addExpectedPropertyCheck('color')
+          .addExpectedCharacteristic('hue', hap.Characteristic.Hue, true)
+          .addExpectedCharacteristic('saturation', hap.Characteristic.Saturation, true);
+
+        harness.prepareCreationMocks();
+        harness.callCreators(deviceExposes);
+        harness.checkCreationExpectations();
+
+        // Set a color first
+        harness
+          .getOrAddHandler(hap.Service.Lightbulb)
+          .callAndCheckHomeKitSetCallback('hue', 120)
+          .callAndCheckHomeKitSetCallback('saturation', 100);
+
+        harness.clearMocks();
+
+        // Mock the characteristic values
+        const hueMock = harness.getOrAddHandler(hap.Service.Lightbulb).getCharacteristicMock('hue');
+        const saturationMock = harness.getOrAddHandler(hap.Service.Lightbulb).getCharacteristicMock('saturation');
+        hueMock.value = 120;
+        saturationMock.value = 100;
+
+        // Turn off the light - should NOT include color
+        harness.getOrAddHandler(hap.Service.Lightbulb).callAndCheckHomeKitSetCallback('state', false);
+
+        // Verify only state OFF was queued (no color)
+        harness.checkSetDataQueued({ state: 'OFF' });
+      });
+    });
+  });
 });

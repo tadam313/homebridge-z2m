@@ -38,6 +38,7 @@ interface AdaptiveLightingConfig {
 interface LightConfig {
   adaptive_lighting?: boolean | AdaptiveLightingConfig;
   request_brightness?: boolean;
+  include_last_color?: boolean;
 }
 
 const isAdaptiveLightingConfig = (x: unknown): x is AdaptiveLightingConfig => {
@@ -96,10 +97,12 @@ export class LightCreator implements ServiceCreator {
   private createService(expose: ExposesEntryWithFeatures, accessory: BasicAccessory): void {
     const converterConfig = accessory.getConverterConfiguration(LightCreator.CONFIG_TAG);
     let requestBrightness = false;
+    let includeLastColor = false;
     // Adaptive Lighting is enabled by default
     let adaptiveLightingConfig: AdaptiveLightingConfig = { ...LightCreator.ADAPTIVE_LIGHTING_DEFAULT_CONFIG };
     if (isLightConfig(converterConfig)) {
       requestBrightness = !!converterConfig.request_brightness;
+      includeLastColor = !!converterConfig.include_last_color;
       if (converterConfig.adaptive_lighting === false) {
         // Explicitly disabled
         adaptiveLightingConfig = { ...adaptiveLightingConfig, enabled: false };
@@ -111,7 +114,7 @@ export class LightCreator implements ServiceCreator {
     }
 
     try {
-      const handler = new LightHandler(expose, accessory, requestBrightness, adaptiveLightingConfig);
+      const handler = new LightHandler(expose, accessory, requestBrightness, adaptiveLightingConfig, includeLastColor);
       accessory.registerServiceHandler(handler);
     } catch (error) {
       accessory.log.warn(`Failed to setup light for accessory ${accessory.displayName} from expose "${JSON.stringify(expose)}": ${error}`);
@@ -153,9 +156,9 @@ class LightHandler implements ServiceHandler {
   private colorSaturationCharacteristic: Characteristic | undefined;
 
   // Internal cache for hue and saturation. Needed in case X/Y is used
-  private cached_hue = 0.0;
+  private cached_hue: number | null = null;
   private received_hue = false;
-  private cached_saturation = 0.0;
+  private cached_saturation: number | null = null;
   private received_saturation = false;
 
   private get adaptiveLightingEnabled(): boolean {
@@ -166,7 +169,8 @@ class LightHandler implements ServiceHandler {
     expose: ExposesEntryWithFeatures,
     private readonly accessory: BasicAccessory,
     private readonly requestBrightness: boolean,
-    private readonly adaptiveLightingConfig: AdaptiveLightingConfig
+    private readonly adaptiveLightingConfig: AdaptiveLightingConfig,
+    private readonly includeLastColor: boolean
   ) {
     const endpoint = expose.endpoint;
     this.identifier = LightHandler.generateIdentifier(endpoint);
@@ -399,9 +403,52 @@ class LightHandler implements ServiceHandler {
     this.lastAdaptiveLightingTemperature = undefined;
   }
 
-  private handleSetOn(value: CharacteristicValue, callback: CharacteristicSetCallback): void {
+  private buildColorData(logPrefix?: string): Record<string, unknown> | undefined {
+    if (this.colorExpose?.property === undefined || this.colorComponentAExpose === undefined || this.colorComponentBExpose === undefined) {
+      return undefined;
+    }
+
+    // Check if color has been set (not null)
+    if (this.cached_hue === null || this.cached_saturation === null) {
+      return undefined;
+    }
+
     const data = {};
+    data[this.colorExpose.property] = {};
+
+    if (this.colorExpose.name === 'color_hs') {
+      // For color_hs, use hue and saturation directly
+      data[this.colorExpose.property][this.colorComponentAExpose.property] = this.cached_hue;
+      data[this.colorExpose.property][this.colorComponentBExpose.property] = this.cached_saturation;
+      if (logPrefix) {
+        this.accessory.log.debug(
+          `${logPrefix}: ${this.accessory.displayName}: color (hue: ${this.cached_hue}, saturation: ${this.cached_saturation})`
+        );
+      }
+    } else if (this.colorExpose.name === 'color_xy') {
+      // For color_xy, convert hue/saturation to XY
+      const xy = convertHueSatToXy(this.cached_hue, this.cached_saturation);
+      data[this.colorExpose.property][this.colorComponentAExpose.property] = xy[0];
+      data[this.colorExpose.property][this.colorComponentBExpose.property] = xy[1];
+      if (logPrefix) {
+        this.accessory.log.debug(`${logPrefix}: ${this.accessory.displayName}: color (x: ${xy[0]}, y: ${xy[1]})`);
+      }
+    } else {
+      throw new Error(`color not supported: ${this.colorExpose.name}`);
+    }
+
+    return data;
+  }
+
+  private handleSetOn(value: CharacteristicValue, callback: CharacteristicSetCallback): void {
+    let data = {};
     data[this.stateExpose.property] = (value as boolean) ? this.stateExpose.value_on : this.stateExpose.value_off;
+
+    // If turning on and includeLastColor is enabled, include the last color state
+    if (value === true && this.includeLastColor) {
+      data = Object.assign(data, this.buildColorData() ?? {});
+    }
+
     this.accessory.queueDataForSetAction(data);
     // Reset the cached color temperature for Adaptive Lighting when turning on
     // This ensures the next AL update will be sent to the light
@@ -465,85 +512,38 @@ class LightHandler implements ServiceHandler {
   private handleSetHue(value: CharacteristicValue, callback: CharacteristicSetCallback): void {
     this.cached_hue = value as number;
     this.received_hue = true;
-    if (this.colorExpose?.name === 'color_hs' && this.colorComponentAExpose !== undefined) {
-      this.publishHueAndSaturation();
+    try {
+      this.publishColor();
       callback(null);
-    } else if (this.colorExpose?.name === 'color_xy') {
-      this.convertAndPublishHueAndSaturationAsXY();
-      callback(null);
-    } else {
-      callback(new Error('color not supported'));
+    } catch (error) {
+      callback(error as Error);
     }
   }
 
   private handleSetSaturation(value: CharacteristicValue, callback: CharacteristicSetCallback): void {
     this.cached_saturation = value as number;
     this.received_saturation = true;
-    if (this.colorExpose?.name === 'color_hs' && this.colorComponentBExpose !== undefined) {
-      this.publishHueAndSaturation();
+    try {
+      this.publishColor();
       callback(null);
-    } else if (this.colorExpose?.name === 'color_xy') {
-      this.convertAndPublishHueAndSaturationAsXY();
-      callback(null);
-    } else {
-      callback(new Error('color not supported'));
+    } catch (error) {
+      callback(error as Error);
     }
   }
 
-  private publishHueAndSaturation() {
-    try {
-      if (this.received_hue && this.received_saturation) {
-        this.received_hue = false;
-        this.received_saturation = false;
-        if (this.adaptiveLighting?.isAdaptiveLightingActive()) {
-          // Hue/Saturation set from HomeKit, disable Adaptive Lighting
-          this.accessory.log.debug('adaptive_lighting: disable due to hue/sat');
-          this.adaptiveLighting.disableAdaptiveLighting();
-        }
-        if (
-          this.colorExpose?.name === 'color_hs' &&
-          this.colorExpose?.property !== undefined &&
-          this.colorComponentAExpose !== undefined &&
-          this.colorComponentBExpose !== undefined
-        ) {
-          const data = {};
-          data[this.colorExpose.property] = {};
-          data[this.colorExpose.property][this.colorComponentAExpose.property] = this.cached_hue;
-          data[this.colorExpose.property][this.colorComponentBExpose.property] = this.cached_saturation;
-          this.accessory.queueDataForSetAction(data);
-        }
+  private publishColor() {
+    if (this.received_hue && this.received_saturation) {
+      this.received_hue = false;
+      this.received_saturation = false;
+      if (this.adaptiveLighting?.isAdaptiveLightingActive()) {
+        // Hue/Saturation set from HomeKit, disable Adaptive Lighting
+        this.accessory.log.debug('adaptive_lighting: disable due to hue/sat');
+        this.adaptiveLighting.disableAdaptiveLighting();
       }
-    } catch (error) {
-      this.accessory.log.error(`Failed to handle hue/saturation update for ${this.accessory.displayName}: ${error}`);
-    }
-  }
-
-  private convertAndPublishHueAndSaturationAsXY() {
-    try {
-      if (this.received_hue && this.received_saturation) {
-        this.received_hue = false;
-        this.received_saturation = false;
-        if (this.adaptiveLighting?.isAdaptiveLightingActive()) {
-          // Hue/Saturation set from HomeKit, disable Adaptive Lighting
-          this.accessory.log.debug('adaptive_lighting: disable due to hue/sat');
-          this.adaptiveLighting.disableAdaptiveLighting();
-        }
-        if (
-          this.colorExpose?.name === 'color_xy' &&
-          this.colorExpose?.property !== undefined &&
-          this.colorComponentAExpose !== undefined &&
-          this.colorComponentBExpose !== undefined
-        ) {
-          const data = {};
-          const xy = convertHueSatToXy(this.cached_hue, this.cached_saturation);
-          data[this.colorExpose.property] = {};
-          data[this.colorExpose.property][this.colorComponentAExpose.property] = xy[0];
-          data[this.colorExpose.property][this.colorComponentBExpose.property] = xy[1];
-          this.accessory.queueDataForSetAction(data);
-        }
+      const colorData = this.buildColorData();
+      if (colorData !== undefined) {
+        this.accessory.queueDataForSetAction(colorData);
       }
-    } catch (error) {
-      this.accessory.log.error(`Failed to handle hue/saturation update for ${this.accessory.displayName}: ${error}`);
     }
   }
 

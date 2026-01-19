@@ -13,27 +13,19 @@
         "oneOf": [
           {
             "title": "Debug",
-            "enum": [
-              "debug"
-            ]
+            "enum": ["debug"]
           },
           {
             "title": "Info",
-            "enum": [
-              "info"
-            ]
+            "enum": ["info"]
           },
           {
             "title": "Warn",
-            "enum": [
-              "warn"
-            ]
+            "enum": ["warn"]
           },
           {
             "title": "Error",
-            "enum": [
-              "error"
-            ]
+            "enum": ["error"]
           }
         ],
         "required": true
@@ -118,15 +110,11 @@
                 "oneOf": [
                   {
                     "title": "Switch",
-                    "enum": [
-                      "switch"
-                    ]
+                    "enum": ["switch"]
                   },
                   {
                     "title": "Outlet",
-                    "enum": [
-                      "outlet"
-                    ]
+                    "enum": ["outlet"]
                   }
                 ]
               }
@@ -142,15 +130,11 @@
                 "oneOf": [
                   {
                     "title": "Occupancy",
-                    "enum": [
-                      "occupancy"
-                    ]
+                    "enum": ["occupancy"]
                   },
                   {
                     "title": "Motion",
-                    "enum": [
-                      "motion"
-                    ]
+                    "enum": ["motion"]
                   }
                 ]
               }
@@ -206,6 +190,13 @@
               "request_brightness": {
                 "title": "Request brightness",
                 "description": "Allow the brightness to be requested if possible. May cause issues when the light is off.",
+                "type": "boolean",
+                "default": false,
+                "required": false
+              },
+              "include_last_color": {
+                "title": "Include last color on turn on",
+                "description": "Send the last known color state explicitly together with 'state: ON' messages. Useful for lights that don't remember their color state.",
                 "type": "boolean",
                 "default": false,
                 "required": false
